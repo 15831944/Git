@@ -292,4 +292,9 @@ namespace AdjustAreaCommand
         //    AddTransientGraphics(e.Context.RawPoint, 10.0 / pixels.X);
         //}
     }
+
+    public class Transients
+    {
+
+    }
 }
