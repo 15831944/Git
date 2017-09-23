@@ -72,6 +72,11 @@ namespace AdjustAreaCommand
                     PromptEntityResult per = ed.GetEntity(peo);
                     if (per.Status == PromptStatus.OK)
                     {
+                        var pl = trans.GetObject(per.ObjectId, OpenMode.ForRead) as Polyline;
+                        var pickedPt = per.PickedPoint;
+                        pickedPt = pl.GetClosestPointTo(pickedPt, true);
+                        double par = Math.Floor(pl.GetParameterAtPoint(pickedPt));
+                        AddArea(pl, par, true);
                         trans.Commit();
                     }
                 }
@@ -159,7 +164,7 @@ namespace AdjustAreaCommand
             }
         }
 
-        bool AddArea(Polyline pline, double par)
+        bool AddArea(Polyline pline, double par, bool save = false)
         {
             double area = pline.GetArea();
 
@@ -192,6 +197,10 @@ namespace AdjustAreaCommand
             // update the movable end points
             var pt2 = p2.Polar(ang1, h / Math.Sin(dAng1));
             var pt3 = p3.Polar(ang2, h / Math.Sin(dAng2));
+            if (save)
+            {
+                pline.UpgradeOpen();
+            }
             pline.SetPointAt((int)par, pt2);
             pline.SetPointAt((int)pos1, pt3);
             return true;
