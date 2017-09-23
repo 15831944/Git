@@ -3,6 +3,7 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.Runtime;
+using System;
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 using GI = Autodesk.AutoCAD.GraphicsInterface;
 
@@ -16,7 +17,16 @@ namespace AdjustAreaCommand
         Editor ed;
         Document doc;
         Database db;
-        
+
+        Point3d center = new Point3d();
+        double radius = 0.001;
+        double glyphHeight;
+        DBObjectCollection shape = new DBObjectCollection();
+        Polyline pline = null;
+        int param = 0;
+        static double defaultArea = 0;
+        double totalArea = 0;
+
         public Extras()
         {
             doc = AcAp.DocumentManager.MdiActiveDocument;
@@ -29,6 +39,25 @@ namespace AdjustAreaCommand
         {
             try
             {
+                PromptDoubleOptions pdo = new PromptDoubleOptions(
+                    "\nSpecify the polyline area:")
+                {
+                    AllowNegative = false,
+                    AllowNone = false,
+                    AllowZero = false,
+                    DefaultValue = defaultArea,
+                    UseDefaultValue = defaultArea == 0 ? false : true
+                };
+
+                PromptDoubleResult pdr = ed.GetDouble(pdo);
+
+                if (pdr.Status == PromptStatus.OK)
+                {
+                    totalArea = defaultArea = pdr.Value;
+                }
+                else
+                    return;
+
                 using (Transaction trans = db.TransactionManager.StartTransaction())
                 {
                     ed.TurnForcedPickOn();
@@ -54,19 +83,11 @@ namespace AdjustAreaCommand
             finally
             {
                 ed.PointMonitor -= Ed_PointMonitor;
-                if (currentId != ObjectId.Null)
-                {
-                    EraseTransientGraphics();
-                    currentId = ObjectId.Null;
-                }
+                EraseTransientGraphics();
+                pline = null;
             }
         }
 
-        private ObjectId currentId = ObjectId.Null;
-        Point3d center = new Point3d();
-        double radius = 0.001;
-        double glyphHeight;
-        
         private void Ed_PointMonitor(object sender, PointMonitorEventArgs e)
         {
             try
@@ -83,41 +104,50 @@ namespace AdjustAreaCommand
                 // nothing under the mouse cursor.
                 if (fsPaths == null || fsPaths.Length == 0)
                 {
-                    if (currentId != ObjectId.Null)
-                    {
-                        EraseTransientGraphics();
-                        currentId = ObjectId.Null;
-                    }
+                    EraseTransientGraphics();
+                    pline = null;
                     return;
                 }
                 var oIds = fsPaths[0].GetObjectIds();
                 var id = oIds[oIds.GetUpperBound(0)];
 
-                // hovering over the same object.
-                if (currentId == id)
+                bool sameSegment = false;
+                // check if hovering over the same object.
+                if (pline != null && pline.Id == id)
                 {
-                    UpdateTransientGraphics();
+                    var p = pline.GetClosestPointTo(pickedPt, true);
+                    var par = (int)pline.GetParameterAtPoint(p);
+                    sameSegment = par == param;
                 }
+
+                if (sameSegment)
+                    UpdateTransientGraphics();
                 else
                 {
                     using (Transaction trans = db.TransactionManager.StartTransaction())
                     {
-                        Polyline pline = trans.GetObject(id, OpenMode.ForRead) as Polyline;
+                        pline = trans.GetObject(id, OpenMode.ForRead) as Polyline;
                         EraseTransientGraphics();
-                        
-                        if (pline == null)
+
+                        if (pline == null || !pline.Closed)
                         {
                             strCurrentShape = "X";
-                            AddTransientGraphics("X");
+                            AddTransientGraphics("X", null);
                         }
                         else
                         {
+                            var p = pline.GetClosestPointTo(pickedPt, true);
+                            param = (int)pline.GetParameterAtPoint(p);
+                            var pl = pline.Clone() as Polyline;
+                            pl.ColorIndex = 33;
+                            pl.ConstantWidth = glyphHeight * 0.25;
+                            AddArea(pl, param);
+
                             strCurrentShape = "V";
-                            AddTransientGraphics("V");
+                            AddTransientGraphics("V", pl);
                         }
-                        currentId = id;
                     }
-                }                             
+                }
             }
             catch (Autodesk.AutoCAD.Runtime.Exception ex)
             {
@@ -129,10 +159,50 @@ namespace AdjustAreaCommand
             }
         }
 
+        bool AddArea(Polyline pline, double par)
+        {
+            double area = pline.GetArea();
+
+            // get the surrounding parameters
+            double pre1 = par > 0 ? par - 1 : pline.EndParam - 1;
+            double pos1 = par + 1 == pline.EndParam ? 0 : par + 1;
+            double pos2 = pos1 == pline.EndParam ? 1 : pos1 + 1;
+
+            // get the the surrounding points
+            var p1 = pline.GetPointAtParameter(pre1).GetPoint2d();
+            var p2 = pline.GetPointAtParameter(par).GetPoint2d();
+            var p3 = pline.GetPointAtParameter(pos1).GetPoint2d();
+            var p4 = pline.GetPointAtParameter(pos2).GetPoint2d();
+
+            var l1 = p2.GetDistanceTo(p3);
+            var dA = (totalArea - Math.Abs(area));
+            var ang1 = p1.GetVectorTo(p2).Angle;
+            var ang2 = p4.GetVectorTo(p3).Angle;
+            var ang = p2.GetVectorTo(p3).Angle;
+
+            var dAng1 = area > 0 ? (ang - ang1) : (ang1 - ang);
+            var dAng2 = area > 0 ? (ang - ang2) : (ang2 - ang);
+
+            //get the offset (h) of the selected line 
+            var f = 0.5 * (1 / Math.Tan(dAng2) - 1 / Math.Tan(dAng1));
+            var h = Math.Abs(ang1 - ang2) < 0.000001 ?
+                dA / l1 :
+                (-l1 + Math.Sqrt(l1 * l1 + 4 * dA * f)) / 2.0 / f;
+
+            // update the movable end points
+            var pt2 = p2.Polar(ang1, h / Math.Sin(dAng1));
+            var pt3 = p3.Polar(ang2, h / Math.Sin(dAng2));
+            pline.SetPointAt((int)par, pt2);
+            pline.SetPointAt((int)pos1, pt3);
+            return true;
+        }
+
         string strCurrentShape = "V";
-        private void AddTransientGraphics(string shp)
+        private void AddTransientGraphics(string shp, Polyline pl)
         {
             CreateShape(center, radius, strCurrentShape);
+            if (pl != null)
+                shape.Add(pl);
             IntegerCollection col = new IntegerCollection();
             foreach (Entity ent in shape)
             {
@@ -159,14 +229,9 @@ namespace AdjustAreaCommand
             {
                 GI.TransientManager.CurrentTransientManager.EraseTransient(
                     entity, col);
-                //entity.Dispose();
             }
             shape.Clear();
-            //shape.Dispose();
         }
-
-        DBObjectCollection shape = new DBObjectCollection();
-        
 
         void CreateShape(Point3d center, double radius, string curShape)
         {
@@ -235,62 +300,6 @@ namespace AdjustAreaCommand
                 l2.EndPoint = center + new Vector3d(radius, radius, 0);
             }
         }
-
-
-        //private void Source(object sender, PointMonitorEventArgs e)
-        //{
-        //    //string info = "";
-        //    var fsPaths = e.Context.GetPickedEntities();
-        //    var pickedPt = e.Context.ComputedPoint;
-        //    using (Transaction trans = db.TransactionManager.StartTransaction())
-        //    {
-        //        //Nothing to hover..
-        //        if (fsPaths == null || fsPaths.Length == 0)
-        //        {
-        //            //check if previous hovering
-        //            if (poly != null && hoveredElement != null)
-        //            {
-        //                poly.Unhighlight(hoveredElement.Value, true);
-        //                poly = null;
-        //                hoveredElement = null;
-        //            }
-        //            return;
-        //        }
-        //        var oIds = fsPaths[0].GetObjectIds();
-        //        var id = oIds[oIds.GetUpperBound(0)];
-
-        //        if (poly != null && !poly.ObjectId.Equals(id) && hoveredElement != null)
-        //        {
-        //            poly.Unhighlight(hoveredElement.Value, true);
-        //            poly = null;
-        //            hoveredElement = null;
-        //        }
-
-        //        poly = trans.GetObject(id, OpenMode.ForRead) as Polyline;
-        //        if (poly == null)
-        //            return;
-
-        //        var pp = poly.GetClosestPointTo(pickedPt, true);
-        //        var param = (int)poly.GetParameterAtPoint(pp);
-        //        if (hoveredElement != null &&
-        //            hoveredElement.Value.SubentId.IndexPtr.ToInt32() != param)
-        //        {
-        //            poly.Unhighlight(hoveredElement.Value, false);
-        //        }
-
-        //        hoveredElement = new FullSubentityPath(
-        //            new ObjectId[] { id },
-        //            new SubentityId(SubentityType.Edge, new IntPtr((long)param + 1)));
-        //        if (hoveredElement == null)
-        //            return;
-        //        poly.Highlight(hoveredElement.Value, false);
-        //        //info += hoveredElement.Value.SubentId.IndexPtr.ToInt32().ToString() + "\n";
-        //    }
-        //    //if (info != "")
-        //    //e.AppendToolTipText(info);
-        //    Point2d pixels = e.Context.DrawContext.Viewport.GetNumPixelsInUnitSquare(e.Context.RawPoint);
-        //    AddTransientGraphics(e.Context.RawPoint, 10.0 / pixels.X);
-        //}
     }
 
     public class Transients
