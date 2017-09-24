@@ -137,7 +137,7 @@ namespace AdjustAreaCommand
                         if (pline == null || !pline.Closed)
                         {
                             strCurrentShape = "X";
-                            AddTransientGraphics("X", null);
+                            AddTransientGraphics(null);
                         }
                         else
                         {
@@ -146,10 +146,14 @@ namespace AdjustAreaCommand
                             var pl = pline.Clone() as Polyline;
                             pl.ColorIndex = 33;
                             pl.ConstantWidth = glyphHeight * 0.25;
-                            AddArea(pl, param);
-
-                            strCurrentShape = "V";
-                            AddTransientGraphics("V", pl);
+                            if (!AddArea(pl, param))
+                            {
+                                strCurrentShape = "X";
+                                pl = null;
+                            }
+                            else
+                                strCurrentShape = "V";
+                            AddTransientGraphics(pl);
                         }
                     }
                 }
@@ -190,9 +194,13 @@ namespace AdjustAreaCommand
 
             //get the offset (h) of the selected line 
             var f = 0.5 * (1 / Math.Tan(dAng2) - 1 / Math.Tan(dAng1));
+            // if no enough area
+            var val = l1 * l1 + 4 * dA * f;
+            if (val < 0)
+                return false;
             var h = Math.Abs(ang1 - ang2) < 0.000001 ?
                 dA / l1 :
-                (-l1 + Math.Sqrt(l1 * l1 + 4 * dA * f)) / 2.0 / f;
+                (-l1 + Math.Sqrt(val)) / 2.0 / f;
 
             // update the movable end points
             var pt2 = p2.Polar(ang1, h / Math.Sin(dAng1));
@@ -207,7 +215,7 @@ namespace AdjustAreaCommand
         }
 
         string strCurrentShape = "V";
-        private void AddTransientGraphics(string shp, Polyline pl)
+        private void AddTransientGraphics(Polyline pl)
         {
             CreateShape(center, radius, strCurrentShape);
             if (pl != null)
